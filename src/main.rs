@@ -1,17 +1,28 @@
 use std::collections::{HashMap};
-use std::net::{IpAddr, TcpListener};
+use std::env;
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-struct Node {
-    peers: HashMap<IpAddr, Duration>,
+static HEARTBEAT: Duration = Duration::from_secs(2);
+
+struct Config {
+    seed_node_address: SocketAddr,
     heartbeat: Duration,
-    address: IpAddr
+}
+
+struct Node {
+    peers: HashMap<SocketAddr, Duration>,
+    address: SocketAddr,
+    config: Config,
 }
 
 impl Node {
-    fn run(){
-        let listener = TcpListener::bind("0.0.0.0:8080").expect("could not bind");
+    pub fn run(
+        &mut self,
+    ){
+        let addr: SocketAddr = "0.0.0.0:8080".parse().expect("could not parse socketaddr");
+        let listener = TcpListener::bind(self.address).expect("could not bind");
         for stream in listener.incoming() {
             match stream {
                 Err(e) => { eprint!("failed {}", e) }
@@ -23,20 +34,26 @@ impl Node {
             }
         }
     }
+
+    fn gossip(){
+        // if self.ip_address == cfg.seed_address: skip
+        // connect to seed address
+        // print connected to seed node
+    }
 }
 
-fn ping(peer: IpAddr) -> Vec<IpAddr> {
-    let mut new_peers: Vec<IpAddr> = Vec::new();
-    new_peers.push(IpAddr::V4("192.168.0.1:8080".parse().unwrap()));
+fn ping(peer: SocketAddr) -> Vec<SocketAddr> {
+    let mut new_peers: Vec<SocketAddr> = Vec::new();
+    new_peers.push(SocketAddr::V4("192.168.0.1:8080".parse().unwrap()));
     return new_peers;
 }
 
-fn pong() -> Vec<IpAddr>  {
+fn pong() -> Vec<SocketAddr>  {
     let mut peers = HashMap::new();
     let peer_age = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    peers.insert(IpAddr::V4("192.168.0.1".parse().unwrap()), peer_age);
+    peers.insert(SocketAddr::V4("192.168.0.1:8080".parse().unwrap()), peer_age);
 
-    let mut new_peers: Vec<IpAddr> = Vec::new();
+    let mut new_peers: Vec<SocketAddr> = Vec::new();
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     for (peer, age) in peers {
@@ -46,10 +63,28 @@ fn pong() -> Vec<IpAddr>  {
     }
 
     println!("Peers are {}", new_peers[0]);
-
     return new_peers;
 }
 
 fn main() {
-    Node::run()
+    let args: Vec<String> = env::args().collect();
+    let hostname = &args[1];
+    let port = &args[2];
+    let ip_address = format!("{}:{}", hostname, port);
+    let config = Config{
+        seed_node_address: SocketAddr::V4("0.0.0.0:8000".parse().unwrap()),
+        heartbeat: HEARTBEAT,
+    };
+
+    let peers: HashMap<SocketAddr, Duration> = HashMap::new();
+    let mut node = Node{
+        peers: peers,
+        config: config,
+        address: SocketAddr::V4(ip_address.parse().unwrap()),
+    };
+
+    println!("{:?}", args);
+    // get ip address and port to bind to from cmd line arguments
+    // close
+    node.run()
 }
