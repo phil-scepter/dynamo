@@ -1,6 +1,7 @@
-use std::collections::{HashMap};
+use std::collections::{HashMap, HashSet};
 use std::env;
-use std::net::{IpAddr, SocketAddr, TcpListener};
+use std::io::Write;
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,13 +16,17 @@ struct Node {
     peers: HashMap<SocketAddr, Duration>,
     address: SocketAddr,
     config: Config,
+    // todo: tcpstream conn pool
+}
+
+fn now() -> Duration {
+    return SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
 }
 
 impl Node {
     pub fn run(
         &mut self,
-    ){
-        let addr: SocketAddr = "0.0.0.0:8080".parse().expect("could not parse socketaddr");
+    ) {
         let listener = TcpListener::bind(self.address).expect("could not bind");
         for stream in listener.incoming() {
             match stream {
@@ -35,10 +40,39 @@ impl Node {
         }
     }
 
-    fn gossip(){
+    fn bootstrap(&mut self) {
+        let timestamp = now();
+        if self.peers.keys().len() == 0 && self.address != self.config.seed_node_address {
+            self.peers.insert(self.config.seed_node_address, timestamp);
+        }
+
+        for (peer, duration) in self.peers.clone() {
+            for new_peer in self.request_new_peers(peer) {
+                if self.peers.contains_key(&new_peer){
+                    continue;
+                }
+                self.peers.insert(new_peer, timestamp);
+            }
+        }
+
+        for peer in self.peers.keys() {
+            self.connect_to_new_peer(*peer);
+        }
         // if self.ip_address == cfg.seed_address: skip
         // connect to seed address
         // print connected to seed node
+    }
+
+    fn connect_to_new_peer(&self, peer_addr: SocketAddr) -> Result<TcpStream, &'static str> {
+        // no-op
+        let mut stream = TcpStream::connect(peer_addr).expect("Could not connect to peer");
+        stream.write(&[1]); // write new peer message
+        return Ok(stream);
+    }
+
+    fn request_new_peers(&mut self, peer_addr: SocketAddr) -> HashSet<SocketAddr> {
+        // self.connect_to_peer(self.config.seed_node_address);
+        return HashSet::new();
     }
 }
 
