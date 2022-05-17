@@ -4,9 +4,10 @@ use std::env;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::thread;
+use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-static HEARTBEAT: Duration = Duration::from_secs(2);
+static HEARTBEAT: Duration = Duration::from_secs(5);
 
 struct Config {
     seed_node_address: SocketAddr,
@@ -32,17 +33,21 @@ impl WireProtocol {
         return Ok(conn);
     }
 
-    pub fn parse_request(bytes: &mut [u8]) -> Result<WireMessage, &'static str> {
+    pub fn parse_request(stream: &mut TcpStream) -> Result<WireMessage, &'static str> {
+        let mut bytes: [u8; 128] = [0;128];
+        stream.read(&mut bytes);
         if bytes.len() < 8 { // arbitrary number, replace later with correct minimum message length
             return Err("Unknown message type!");
         }
 
-        let buffer = std::str::from_utf8(bytes).expect("could not parse message");
-
+        let buffer = std::str::from_utf8(&mut bytes).expect("could not parse message");
+        println!("received buffer {}", buffer);
         match &buffer[0..7] {
-            "foo" => {},
+            "long_message" => {
+                println!("Received long_message!")
+            },
             "bar" => {},
-            _ => panic!(),
+            _ => return Err("Unknown message type!"),
         }
 
         return Ok(WireMessage{});
@@ -57,57 +62,57 @@ struct Node {
 }
 
 impl Node {
-    pub fn run(
-        &mut self,
-    ) {
+    pub fn run(&self) {
         let listener = TcpListener::bind(self.address).expect("could not bind");
         for stream in listener.incoming() {
             match stream {
                 Err(e) => { eprint!("failed {}", e) }
-                Ok(stream) => {
+                Ok(mut stream) => {
                     thread::spawn(move || {
-                        pong()
+                        WireProtocol::parse_request(&mut stream);
                     });
                 }
             }
         }
     }
 
-    fn bootstrap(&mut self) {
-        let timestamp = now();
+    fn gossip(&mut self) {
+        // prelude
         if self.peers.keys().len() == 0 && self.address != self.config.seed_node_address {
+            let timestamp = now();
             self.peers.insert(self.config.seed_node_address, timestamp);
         }
 
-        for (peer, duration) in self.peers.clone() {
-            for new_peer in self.request_new_peers(peer) {
-                if self.peers.contains_key(&new_peer){
-                    continue;
+        thread::spawn( || {
+            let mut count :i32 = 1;
+            loop {
+                println!("heartbeat {}..", count);
+                let timestamp = now();
+                for (peer, duration) in self.peers.clone() {
+                    for new_peer in self.request_new_peers(&peer) {
+                        if self.peers.contains_key(&new_peer){
+                            continue;
+                        }
+                        // insert with lock
+                        self.peers.insert(new_peer, timestamp);
+                    }
                 }
-                self.peers.insert(new_peer, timestamp);
+                count += 1;
+                sleep(self.config.heartbeat);
             }
-        }
-
-        for peer in self.peers.keys() {
-            // todo: change to request_new_peers
-            self.connect_to_new_peer(*peer);
-        }
+        });
     }
 
-    fn connect_to_new_peer(&self, peer_addr: SocketAddr) -> Result<TcpStream, &'static str> {
+    fn request_new_peers(&self, peer_addr: &SocketAddr) -> HashSet<SocketAddr> {
         // no-op
         let mut stream = TcpStream::connect(peer_addr).expect("Could not connect to peer");
-        stream.write("input".as_bytes()).expect("Failed to write to server");
+        stream.write("long_message".as_bytes()).expect("Failed to write to server");
         // write ping -> new peer
         // receive pong <- list of all known peers
         // split list
         // coerce into socketaddrs
         // update self.peers with any new peers
-        return Ok(stream);
-    }
-
-    fn request_new_peers(&mut self, peer_addr: SocketAddr) -> HashSet<SocketAddr> {
-        // self.connect_to_peer(self.config.seed_node_address);
+        println!("wrote long_message");
         return HashSet::new();
     }
 }
@@ -141,13 +146,13 @@ fn main() {
     let hostname = &args[1];
     let port = &args[2];
     let ip_address = format!("{}:{}", hostname, port);
-    let config = Config{
-        seed_node_address: SocketAddr::V4("0.0.0.0:8000".parse().unwrap()),
-        heartbeat: HEARTBEAT,
+    let config = Config {
+        seed_node_address: SocketAddr::V4("127.0.0.1:8080".parse().unwrap()),
+        heartbeat: Duration::from_secs(5),
     };
 
     let peers: HashMap<SocketAddr, Duration> = HashMap::new();
-    let mut node = Node{
+    let mut node = &Node{
         peers: peers,
         config: config,
         address: SocketAddr::V4(ip_address.parse().unwrap()),
@@ -156,5 +161,6 @@ fn main() {
     println!("{:?}", args);
     // get ip address and port to bind to from cmd line arguments
     // close
-    node.run()
+    node.gossip();
+    node.run();
 }
