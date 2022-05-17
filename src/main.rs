@@ -1,6 +1,7 @@
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,15 +13,47 @@ struct Config {
     heartbeat: Duration,
 }
 
+struct WireMessage {}
+
+fn now() -> Duration {
+    return SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+}
+
+enum WireCommand {
+    NewPeersSince
+}
+
+struct WireProtocol {
+}
+
+impl WireProtocol {
+    pub fn new_peers_since(conn: TcpStream) -> Result<TcpStream, &'static str> {
+        //
+        return Ok(conn);
+    }
+
+    pub fn parse_request(bytes: &mut [u8]) -> Result<WireMessage, &'static str> {
+        if bytes.len() < 8 { // arbitrary number, replace later with correct minimum message length
+            return Err("Unknown message type!");
+        }
+
+        let buffer = std::str::from_utf8(bytes).expect("could not parse message");
+
+        match &buffer[0..7] {
+            "foo" => {},
+            "bar" => {},
+            _ => panic!(),
+        }
+
+        return Ok(WireMessage{});
+    }
+}
+
 struct Node {
     peers: HashMap<SocketAddr, Duration>,
     address: SocketAddr,
     config: Config,
     // todo: tcpstream conn pool
-}
-
-fn now() -> Duration {
-    return SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
 }
 
 impl Node {
@@ -56,17 +89,20 @@ impl Node {
         }
 
         for peer in self.peers.keys() {
+            // todo: change to request_new_peers
             self.connect_to_new_peer(*peer);
         }
-        // if self.ip_address == cfg.seed_address: skip
-        // connect to seed address
-        // print connected to seed node
     }
 
     fn connect_to_new_peer(&self, peer_addr: SocketAddr) -> Result<TcpStream, &'static str> {
         // no-op
         let mut stream = TcpStream::connect(peer_addr).expect("Could not connect to peer");
-        stream.write(&[1]); // write new peer message
+        stream.write("input".as_bytes()).expect("Failed to write to server");
+        // write ping -> new peer
+        // receive pong <- list of all known peers
+        // split list
+        // coerce into socketaddrs
+        // update self.peers with any new peers
         return Ok(stream);
     }
 
