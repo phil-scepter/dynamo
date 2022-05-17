@@ -1,3 +1,47 @@
+use std::thread;
+use std::time::{Duration, Instant};
+use crossbeam::channel::{after, bounded, tick};
+use crossbeam::select;
+
+pub fn main(){
+    /*
+    let gossip = tick(Duration::from_secs(1));
+    println!("Hello world!");
+
+    thread::spawn(move || sender.send(10).unwrap());
+    loop {
+        select! {
+            recv(gossip) -> _ => println!("gossiping.."),
+            recv(requests) -> _ => println!("new request received"),
+        }
+    }*/
+
+    let start = Instant::now();
+    let ticker = tick(Duration::from_millis(500));
+    let timeout = after(Duration::from_millis(5000));
+    let (sender, requests) = bounded(3);
+
+    thread::spawn(move || {
+        sender.send(1);
+        thread::sleep(Duration::from_secs(1));
+        sender.send(2);
+    });
+
+    loop {
+        select! {
+            recv(ticker) -> _ => {
+                    println!("gossip");
+                },
+            recv(requests) -> request => {
+                    if let Ok(request) = request {
+                        println!("new request received {:?}", request);
+                    }
+            },
+        }
+    }
+}
+
+/*
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -164,3 +208,4 @@ fn main() {
     node.gossip();
     node.run();
 }
+ */
