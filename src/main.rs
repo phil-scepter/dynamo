@@ -1,36 +1,92 @@
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use crossbeam::channel::{after, bounded, tick};
 use crossbeam::select;
 
-pub fn main(){
-    /*
-    let gossip = tick(Duration::from_secs(1));
-    println!("Hello world!");
+/*
+void global state in general. Instead, construct the object somewhere early (perhaps in main), then pass mutable references to that object into the places that need it. This will usually make your code easier to reason about and doesn't require as much bending over backwards.
+*/
 
-    thread::spawn(move || sender.send(10).unwrap());
-    loop {
-        select! {
-            recv(gossip) -> _ => println!("gossiping.."),
-            recv(requests) -> _ => println!("new request received"),
+
+static DUMMY: &str = "dummy_value";
+
+pub struct Peermap<'x> {
+    peers: &'x Arc<RwLock<HashMap<i32, i32>>>,
+}
+
+impl Peermap<'_> {
+    pub fn set(&self, key: i32, value: i32){
+        let peers = self.peers.clone();
+        peers.write().unwrap().insert(key, value);
+    }
+
+    pub fn get(&self, key: i32) -> i32 {
+        let peers = self.peers.clone();
+        let lock_result = peers.read().unwrap();
+        let value = lock_result.get(&key).unwrap();
+
+        return *value;
+    }
+
+    pub fn size(&self) -> usize {
+        let peers = self.peers.clone();
+        let lock_result = peers.read().unwrap();
+
+        return lock_result.len();
+    }
+
+
+    // let foo: &Foo<'static> = Foo::new("foo");
+    pub fn gossip(&self){
+        let peers:Vec<(i32, i32)> = vec![(2, 2), (3, 3), (4, 4), (5, 5)];
+
+        for (peer_name, peer_id) in peers {
+            self.set(peer_name, peer_id);
+            thread::sleep(Duration::from_secs(1));
         }
-    }*/
+    }
+}
 
+impl Clone for Peermap<'_> {
+    fn clone(&'_ self) -> Self {
+        return Self{
+            peers: &self.peers,
+        }
+    }
+}
+
+
+pub fn main(){
     let start = Instant::now();
     let ticker = tick(Duration::from_millis(500));
     let timeout = after(Duration::from_millis(5000));
-    let (sender, requests) = bounded(3);
+    let (sender , requests) = bounded::<(&str, &str)>(3);
+
+    let hashmap: HashMap<i32, i32> = HashMap::new();
+    let rwlock: RwLock<HashMap<i32, i32>> = RwLock::new(hashmap);
+    let peers: &Arc<RwLock<HashMap<i32, i32>>> = &Arc::new(rwlock);
+    let peer_map: &Peermap = &Peermap{ peers };
+
+    peer_map.set(0, 0);
+    &peer_map.gossip();
+
+    // clone reference in main thread
+    // move borrowed reference out of main thread into worker thread
+    //
+    let peers_2 = Arc::clone(peers);
 
     thread::spawn(move || {
-        sender.send(1);
-        thread::sleep(Duration::from_secs(1));
-        sender.send(2);
+        let peer_map_2: &Peermap = &Peermap{ peers: &peers_2 };
+        peer_map_2.gossip();
     });
 
     loop {
         select! {
             recv(ticker) -> _ => {
-                    println!("gossip");
+                    println!("peer_map size is {:?}", &peer_map.peers.clone()); // .size()
                 },
             recv(requests) -> request => {
                     if let Ok(request) = request {
