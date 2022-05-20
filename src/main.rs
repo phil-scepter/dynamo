@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use crossbeam::channel::{after, bounded, tick};
@@ -37,17 +37,6 @@ impl Peermap<'_> {
 
         return lock_result.len();
     }
-
-
-    // let foo: &Foo<'static> = Foo::new("foo");
-    pub fn gossip(&self){
-        let peers:Vec<(i32, i32)> = vec![(2, 2), (3, 3), (4, 4), (5, 5)];
-
-        for (peer_name, peer_id) in peers {
-            self.set(peer_name, peer_id);
-            thread::sleep(Duration::from_secs(1));
-        }
-    }
 }
 
 impl Clone for Peermap<'_> {
@@ -58,12 +47,10 @@ impl Clone for Peermap<'_> {
     }
 }
 
-
 pub fn main(){
     let start = Instant::now();
     let ticker = tick(Duration::from_millis(500));
-    let timeout = after(Duration::from_millis(5000));
-    let (sender , requests) = bounded::<(&str, &str)>(3);
+    let (sender , requests) = bounded::<(i32, i32)>(3);
 
     let hashmap: HashMap<i32, i32> = HashMap::new();
     let rwlock: RwLock<HashMap<i32, i32>> = RwLock::new(hashmap);
@@ -71,27 +58,39 @@ pub fn main(){
     let peer_map: &Peermap = &Peermap{ peers };
 
     peer_map.set(0, 0);
-    &peer_map.gossip();
+    // &peer_map.gossip();
 
     // clone reference in main thread
-    // move borrowed reference out of main thread into worker thread
-    //
+    // move cloned reference out of main thread into worker thread
+    // used cloned reference to create cloned struct
     let peers_2 = Arc::clone(peers);
 
     thread::spawn(move || {
-        let peer_map_2: &Peermap = &Peermap{ peers: &peers_2 };
-        peer_map_2.gossip();
+        let mut index = 6;
+        loop {
+            sender.send((index, index));
+            thread::sleep(Duration::from_secs(1));
+            index += 1;
+        }
     });
 
+    let peers: Vec<(i32, i32)> = vec![(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)];
+    let mut index = 0;
     loop {
         select! {
             recv(ticker) -> _ => {
-                    println!("peer_map size is {:?}", &peer_map.peers.clone()); // .size()
+                    println!("peer_map size is {:?}", &peer_map.peers.clone().read().unwrap().keys().len()); // .size()
                 },
             recv(requests) -> request => {
                     if let Ok(request) = request {
                         println!("new request received {:?}", request);
+                        peer_map.set(request.0, request.1);
+                    if index < 5 {
+                        let (peer_name, peer_id) = peers[index];
+                        peer_map.set(peer_name, peer_id);
+                        index += 1;
                     }
+                }
             },
         }
     }
