@@ -1,32 +1,35 @@
+/*
+next steps:
+- clean up multithreaded hashmap implementation
+- integrate basic networking implementation/gossip protocol
+- tests for hashmap concurrency & basic networking (including python)
+- consistent hashing implementation & tests
+- eventual consistency parameter tuning
+*/
+
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam::channel::{after, bounded, tick};
 use crossbeam::select;
 
-/*
-void global state in general. Instead, construct the object somewhere early (perhaps in main), then pass mutable references to that object into the places that need it. This will usually make your code easier to reason about and doesn't require as much bending over backwards.
-*/
-
-
-static DUMMY: &str = "dummy_value";
-
-pub struct Peermap<'x> {
-    peers: &'x Arc<RwLock<HashMap<i32, i32>>>,
+pub struct PeerMap<'x> {
+    peers: &'x Arc<RwLock<HashMap<SocketAddr, Duration>>>, // socketaddr :: duration
 }
 
-impl Peermap<'_> {
-    pub fn set(&self, key: i32, value: i32){
+impl PeerMap<'_> {
+    pub fn set(&self, peer_addr: SocketAddr, last_seen: Duration){
         let peers = self.peers.clone();
-        peers.write().unwrap().insert(key, value);
+        peers.write().unwrap().insert(peer_addr, last_seen);
     }
 
-    pub fn get(&self, key: i32) -> i32 {
+    pub fn get(&self, socket_addr: SocketAddr) -> Duration {
         let peers = self.peers.clone();
         let lock_result = peers.read().unwrap();
-        let value = lock_result.get(&key).unwrap();
+        let value = lock_result.get(&socket_addr).unwrap();
 
         return *value;
     }
@@ -39,7 +42,7 @@ impl Peermap<'_> {
     }
 }
 
-impl Clone for Peermap<'_> {
+impl Clone for PeerMap<'_> {
     fn clone(&'_ self) -> Self {
         return Self{
             peers: &self.peers,
@@ -50,49 +53,70 @@ impl Clone for Peermap<'_> {
 pub fn main(){
     let start = Instant::now();
     let ticker = tick(Duration::from_millis(500));
-    let (sender , requests) = bounded::<(i32, i32)>(3);
+    let (sender , requests) = bounded::<(SocketAddr, Duration)>(3);
 
-    let hashmap: HashMap<i32, i32> = HashMap::new();
-    let rwlock: RwLock<HashMap<i32, i32>> = RwLock::new(hashmap);
-    let peers: &Arc<RwLock<HashMap<i32, i32>>> = &Arc::new(rwlock);
-    let peer_map: &Peermap = &Peermap{ peers };
-
-    peer_map.set(0, 0);
-    // &peer_map.gossip();
+    let hashmap: HashMap<SocketAddr, Duration> = HashMap::new();
+    let rwlock: RwLock<HashMap<SocketAddr, Duration>> = RwLock::new(hashmap);
+    let peers: &Arc<RwLock<HashMap<SocketAddr, Duration>>> = &Arc::new(rwlock);
 
     // clone reference in main thread
     // move cloned reference out of main thread into worker thread
     // used cloned reference to create cloned struct
-    let peers_2 = Arc::clone(peers);
+    let peers_clone = Arc::clone(peers);
+    let ticker_clone = ticker.clone();
+    let requests_clone= requests.clone();
 
     thread::spawn(move || {
-        let mut index = 6;
+        let peer_map: &PeerMap = &PeerMap { peers: &peers_clone };
         loop {
-            sender.send((index, index));
-            thread::sleep(Duration::from_secs(1));
-            index += 1;
-        }
-    });
-
-    let peers: Vec<(i32, i32)> = vec![(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)];
-    let mut index = 0;
-    loop {
-        select! {
-            recv(ticker) -> _ => {
-                    println!("peer_map size is {:?}", &peer_map.peers.clone().read().unwrap().keys().len()); // .size()
+            select! {
+                recv(ticker_clone) -> _ => {
+                    println!("peer_map size is {:?}", &peer_map.size());
                 },
-            recv(requests) -> request => {
+                recv(requests_clone) -> request => {
                     if let Ok(request) = request {
                         println!("new request received {:?}", request);
                         peer_map.set(request.0, request.1);
-                    if index < 5 {
-                        let (peer_name, peer_id) = peers[index];
-                        peer_map.set(peer_name, peer_id);
-                        index += 1;
                     }
-                }
-            },
+                },
+            }
         }
+    });
+
+    let peers_clone = Arc::clone(peers);
+    let ticker_clone = ticker.clone();
+    let requests_clone= requests.clone();
+
+    thread::spawn(move || {
+        let peer_map: &PeerMap = &PeerMap { peers: &peers_clone };
+        let ticker = ticker.clone();
+        let requests = requests.clone();
+        loop {
+            select! {
+                recv(ticker_clone) -> _ => {
+                    println!("peer_map size is {:?}", &peer_map.size());
+                },
+                recv(requests_clone) -> request => {
+                    if let Ok(request) = request {
+                        println!("new request received {:?}", request);
+                        peer_map.set(request.0, request.1);
+                    }
+                },
+            }
+        }
+    });
+
+    let mut index = 1;
+    loop {
+        let ip_addr = format!("0.0.0.0:{}", index);
+        sender.send(
+            (
+                SocketAddr::V4(ip_addr.parse().unwrap()),
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap(),
+            )
+        );
+        thread::sleep(Duration::from_secs(1));
+        index += 1;
     }
 }
 
