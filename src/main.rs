@@ -15,6 +15,7 @@ use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, RwLock};
 use std::{env, thread};
 use std::fmt::Error;
+use std::intrinsics::atomic_or;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam::channel::{after, bounded, tick};
@@ -90,8 +91,8 @@ struct WireProtocol {
 impl WireProtocol {
     pub fn parse_request(stream: &mut TcpStream) { // -> std::result::Result<WireMessage, Error> {
         let mut bytes: [u8; 128] = [0;128]; // todo - arbitrary sized read
-        stream.read(&mut bytes);
-        if bytes.len() < 8 { // arbitrary number, replace later with correct minimum message length
+        let total_read = stream.read(&mut bytes);
+        if total_read == 0 || bytes.len() < 14 { // arbitrary number, replace later with correct minimum message length
             return // Err("Unknown message type!".into_string());
         }
 
@@ -465,26 +466,5 @@ fn pong() -> Vec<SocketAddr>  {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let hostname = &args[1];
-    let port = &args[2];
-    let ip_address = format!("{}:{}", hostname, port);
-    let config = Config {
-        seed_node_address: SocketAddr::V4("127.0.0.1:8080".parse().unwrap()),
-        heartbeat: Duration::from_secs(5),
-    };
-
-    let peers: HashMap<SocketAddr, Duration> = HashMap::new();
-    let mut node = &Node{
-        peers: peers,
-        config: config,
-        address: SocketAddr::V4(ip_address.parse().unwrap()),
-    };
-
-    println!("{:?}", args);
-    // get ip address and port to bind to from cmd line arguments
-    // close
-    node.gossip();
-    node.run();
 }
  */
