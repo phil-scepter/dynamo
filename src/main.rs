@@ -46,7 +46,7 @@ pub struct PeerMap {
     peers: Arc<RwLock<HashMap<SocketAddr, Duration>>>,
 }
 
-impl PeerMap<> {
+impl PeerMap {
     pub fn set(&self, peer_addr: SocketAddr, last_seen: Duration){
         let peers = self.peers.clone();
         peers.write().unwrap().insert(peer_addr, last_seen);
@@ -107,7 +107,7 @@ impl RequestPeers {
 
 impl WireMessage for RequestPeers {
     fn process(&self, mut stream: BufTcpStream) {
-        let mut buffer = "".to_owned();
+        let mut buffer = String::new();
         for (peer_addr, _) in self.peer_map.pairs() {
             buffer += &format!("{}\n", peer_addr);
         }
@@ -116,21 +116,23 @@ impl WireMessage for RequestPeers {
             buffer.as_bytes()
         ).expect("Failed to write to server");
 
+        assert_ne!(bytes_written, 0);
+
         stream.output.flush().expect("could not flush peers to stream");
         return;
     }
 }
 
-struct WireProtocol {
-}
+struct WireProtocol {}
 
-impl WireProtocol {
+impl <'x>WireProtocol {
+    const RequestPeers: &'x str = "request_peers";
+    const GetValueForKey: &'x str = "get_value_for_key";
+    const SetValueForKey: &'x str = "set_value_for_key";
+
     pub fn parse_request(mut stream: TcpStream, peer_map: PeerMap) {
         let mut buf_stream = match BufTcpStream::new(stream) {
-            Ok(buf_stream) => {
-                println!("successfully created BufTcpStream");
-                buf_stream
-            },
+            Ok(buf_stream) => { buf_stream },
             Err(e) => {
                 println!("error creating BufTcpStream {}", e);
                 return;
@@ -138,58 +140,47 @@ impl WireProtocol {
         };
 
         let mut command= String::new();
-        println!("about to read result");
         let read_result = buf_stream.input.read_line(&mut command);
-        println!("read_result: {:?}", read_result);
         let mut total_bytes_read = match read_result {
-            Ok(n) => {
-                println!("n: {}", n);
-                n
-            },
+            Ok(n) => { n },
             Err(e) => {
                 println!("error reading off buf_stream {}", e);
                 return;
             },
         };
 
-        println!("total_bytes_read: {}", total_bytes_read);
-
         if total_bytes_read == 0 || command.len() < 13 { // number can change replace later with codified minimum message length
+            println!("invalid command {}", command);
             return
         }
-
-        let request_peers = "request_peers\n".to_string();
 
         let mut peer_address = String::new();
         total_bytes_read = buf_stream.input.read_line(&mut peer_address).unwrap();
         peer_address = remove_whitespace(&peer_address);
-        println!("peer_address value is {}", peer_address);
-        println!("total_bytes_read for peer_address: {}", total_bytes_read);
 
         let remote_addr = match peer_address.parse::<SocketAddr>(){
-            Ok(v) => {
-                println!("remote socket_addr is {}", v);
-                v
-            },
+            Ok(v) => { v },
             Err(e) => {
                 println!("error coercing remote socket_addr from str : {}", e);
                 return
             },
         };
-        println!("remote_addr is {}", remote_addr);
 
         if None == peer_map.get(&remote_addr) {
             peer_map.set(remote_addr, now());
         }
+        command = remove_whitespace(&command);
 
-        match command { // newline
-            request_peers=> {
+        match command {
+            RequestPeers => {
                 let handler = RequestPeers::new(peer_map);
                 println!("created handler");
                 handler.process(buf_stream)
-            },
-            v => {
-                println!("unexpected value {}", v);
+            }
+            GetValueForKey => {},
+            SetValueForKey => {},
+            unknown  => {
+                println!("unexpected command received: {}", unknown);
                 return;
             },
         }
@@ -231,8 +222,7 @@ impl Node {
         }
     }
 
-    // this is a static method or even a separate function
-    // i don't think rust wants me to spin a thread referencing self inside a method
+    // this should be a static method or even a separate function
     fn gossip(&self) {
         // prelude
         if self.peer_map.size() == 0 && self.address != self.config.seed_node_address {
@@ -245,6 +235,7 @@ impl Node {
         let mut count :i32 = 1;
         loop {
             println!("heartbeat {}..", count);
+            println!("peer_map is {:?}", self.peer_map.pairs().clone());
             let timestamp = now();
             for (peer, duration) in peer_map.pairs().clone() {
                 let known_peers = self.request_known_peers(&peer);
