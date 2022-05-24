@@ -4,7 +4,7 @@ import multiprocessing as mp
 
 
 def run_node(node_id):
-    command = ['RUST_BACKTRACE=1 cargo run --package dynamo --bin dynamo "127.0.0.1" "{}"'.format(8006 + node_id)]
+    command = ['RUST_BACKTRACE=1 cargo run --package dynamo --bin dynamo "127.0.0.1" "{}"'.format(8000 + node_id)]
     subprocess.Popen(command, shell=True)
 
 

@@ -30,22 +30,20 @@ fn now() -> Duration {
 
 struct BufTcpStream {
     input: BufReader<TcpStream>,
-    unused: BufWriter<TcpStream>,
-    output: TcpStream,
+    output: BufWriter<TcpStream>,
 }
 
 impl BufTcpStream {
     fn new(stream: TcpStream) -> io::Result<Self> {
         let input = BufReader::new(stream.try_clone()?);
-        let unused = BufWriter::new(stream.try_clone()?);
-        let output = stream;
+        let output = BufWriter::new(stream.try_clone()?);
 
-        Ok(Self { input, unused, output })
+        Ok(Self { input, output })
     }
 }
 
 pub struct PeerMap {
-    peers: Arc<RwLock<HashMap<SocketAddr, Duration>>>, // socketaddr :: duration
+    peers: Arc<RwLock<HashMap<SocketAddr, Duration>>>,
 }
 
 impl PeerMap<> {
@@ -109,25 +107,16 @@ impl RequestPeers {
 
 impl WireMessage for RequestPeers {
     fn process(&self, mut stream: BufTcpStream) {
-        println!("writing peers to stream");
-        let mut buffer = "".to_owned(); // ":127.0.0.1:8001\n127.0.0.1:8002\n127.0.0.1:8003\n127.0.0.1:8004\n127.0.0.1:8005\n";
+        let mut buffer = "".to_owned();
         for (peer_addr, _) in self.peer_map.pairs() {
             buffer += &format!("{}\n", peer_addr);
         }
 
-        println!("payload is {}", buffer);
-        let bytes_written = stream.unused.write(buffer.as_bytes()).unwrap(); // expect("Failed to write to server");
+        let bytes_written = stream.output.write(
+            buffer.as_bytes()
+        ).expect("Failed to write to server");
 
-        println!("wrote {} bytes to buffer", bytes_written);
-        match stream.output.flush(){
-            Ok(ok) => {
-                println!("success response from flush {:?}", ok);
-            },
-            Err(e) => {
-                println!("error response from flush {:?}", e);
-            }
-        };
-        println!("flushed result");
+        stream.output.flush().expect("could not flush peers to stream");
         return;
     }
 }
@@ -213,6 +202,7 @@ impl WireProtocol {
 struct Config {
     seed_node_address: SocketAddr,
     heartbeat: Duration,
+    read_timeout: Duration
 }
 
 struct Node {
@@ -224,7 +214,9 @@ struct Node {
 
 impl Node {
     pub fn listen(&self) {
-        let listener = TcpListener::bind(self.address).expect("could not bind");
+        let listener = TcpListener::bind(self.address).expect(
+            &format!("could not bind to address {}", self.address)
+        );
         for stream in listener.incoming() {
             match stream {
                 Err(e) => { eprint!("failed {}", e) }
@@ -260,7 +252,7 @@ impl Node {
                     None => {},
                     Some(new_peers) => {
                         for new_peer in &new_peers {
-                            if let None = peer_map.get(&new_peer){
+                            if self.address != *new_peer && peer_map.get(&new_peer) == None  {
                                 // insert with lock
                                 peer_map.set(*new_peer, timestamp); //todo: timestamp should come from response?
                             }
@@ -274,30 +266,27 @@ impl Node {
     }
 
     fn request_new_peers(&self, peer_addr: &SocketAddr) -> Option<HashSet<SocketAddr>> {
-        println!("requesting new peers from {}", peer_addr);
-        let buf = &mut [0; 74];
-        let mut new_peers = HashSet::new();
-
         if self.address == *peer_addr {
             return None;
         }
+
+        let buffer = &mut [0; 256];
+        let mut new_peers = HashSet::new();
 
         let conn_result = TcpStream::connect(peer_addr);
         match conn_result {
             Ok(mut conn) => {
                 let local_addr = self.address.to_string();
-                println!("local_addr is {}", local_addr);
-                let request = format!("request_peers\n{}\n", local_addr);
+                let request = format!("request_peers\n{}\n", local_addr);  // todo - should be a classmethod on wiremessage
+
                 let resp = conn.write(request.as_bytes());
                 if resp.is_err() {
                     println!("Failed to send request to peer {}", peer_addr);
                     return None;
                 }
 
-                println!("wrote request_peers to peer {} with {}", peer_addr, request);
-                conn.set_read_timeout(Some(Duration::from_millis(5000)));
-                conn.read(buf);
-                println!("read response from peer {} is {:?}", peer_addr, buf);
+                conn.set_read_timeout(Some(self.config.read_timeout));
+                conn.read(buffer);
             },
             Err(e) => {
                 println!("Failed to connect to peer {}: {}", peer_addr, e);
@@ -305,58 +294,46 @@ impl Node {
             }
         }
 
-        let mut peer_addrs = match std::str::from_utf8(buf) {
+        let mut peer_addrs = match std::str::from_utf8(buffer) {
             Ok(v) => v,
             Err(e) => {
-                print!("Invalid UTF-8 sequence: {}", e);
+                println!("Invalid UTF-8 sequence: {}", e);
                 return None;
             },
         };
 
-        println!("peer_addrs from peer {} are ..{}..", peer_addr, peer_addrs);
         for peer_addr in peer_addrs.split("\n") {
             let peer_addr = &remove_whitespace(&peer_addr);
-            println!("peer_addr is {} - len {}", peer_addr, peer_addr.len());
             let socket_addr = match peer_addr.parse::<SocketAddr>(){
                 Ok(val) => val,
                 Err(_) => continue,
             };
             new_peers.insert(socket_addr);
         }
-        println!("new_peers is {:?}", new_peers);
 
+        println!("new_peers are {:?}", new_peers);
         return Some(new_peers);
     }
 }
 
 pub fn main(){
-    let ticker = tick(Duration::from_millis(2500));
-    let (sender , requests) = bounded::<(SocketAddr, Duration)>(3);
+    let ticker = tick(Duration::from_secs(5));
 
     let hashmap: HashMap<SocketAddr, Duration> = HashMap::new();
     let rwlock: RwLock<HashMap<SocketAddr, Duration>> = RwLock::new(hashmap);
     let peers: Arc<RwLock<HashMap<SocketAddr, Duration>>> = Arc::new(rwlock);
 
-    // clone reference in main thread
-    // move cloned reference out of main thread into worker thread
-    // used cloned reference to create cloned struct
+    // thread safe clones of entities to be moved for ticker loop
     let peers_clone = Arc::clone(&peers);
     let ticker_clone = ticker.clone();
-    let requests_clone= requests.clone();
 
     thread::spawn(move || {
         let peer_map: &PeerMap = &PeerMap { peers: peers_clone };
         loop {
             select! {
                 recv(ticker_clone) -> _ => {
-                    println!("peer_map size is {:?} - worker 1", &peer_map.size());
-                },
-                recv(requests_clone) -> request => {
-                    if let Ok(request) = request {
-                        // println!("new request received {:?} - worker 1", request);
-                        peer_map.set(request.0, request.1);
-                    }
-                },
+                    println!("peer_map is {:?}", &peer_map.pairs());
+                }
             }
         }
     });
@@ -364,21 +341,20 @@ pub fn main(){
     let args: Vec<String> = env::args().collect();
     let hostname = &args[1];
     let port = &args[2];
-    let seed_node_address = SocketAddr::V4("127.0.0.1:8002".parse().unwrap());
+    let seed_node_address = SocketAddr::V4("127.0.0.1:8080".parse().unwrap());
+    let this_node_address = SocketAddr::V4(format!("{}:{}", hostname, port).parse().unwrap());
 
     let config = Config {
-        seed_node_address: seed_node_address,
-        heartbeat: Duration::from_secs(5),
+        seed_node_address,
+        heartbeat: Duration::from_secs(15),
+        read_timeout: Duration::from_secs(5),
     };
 
     let gossip_node = Node{
         peer_map: PeerMap {peers: Arc::clone(&peers)},
-        config: config,
-        address: SocketAddr::V4(format!("{}:{}", hostname, port).parse().unwrap()),
+        config,
+        address: this_node_address,
     };
-
-    // get ip address and port to bind to from cmd line arguments
-    // close
 
     thread::spawn(move || {
         gossip_node.gossip();
@@ -386,8 +362,8 @@ pub fn main(){
 
     let listener_node = Node{
         peer_map: PeerMap {peers: Arc::clone(&peers)},
-        config: config,
-        address: SocketAddr::V4(format!("{}:{}", hostname, port).parse().unwrap()),
+        config,
+        address: this_node_address,
     };
 
     listener_node.listen();
@@ -397,7 +373,6 @@ pub fn main(){
 fn test_peermap(){ // ensure that peermap provides a thread safe interface
     let ticker = tick(Duration::from_millis(50));
     let (sender , requests) = bounded::<(SocketAddr, Duration)>(5);
-    let timeout = after(Duration::from_millis(500));
 
     let hashmap: HashMap<SocketAddr, Duration> = HashMap::new();
     let rwlock: RwLock<HashMap<SocketAddr, Duration>> = RwLock::new(hashmap);
