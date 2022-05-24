@@ -11,15 +11,22 @@ use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Iter;
 use std::hash::Hash;
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, RwLock};
 use std::{env, thread};
 use std::fmt::Error;
-use std::intrinsics::atomic_or;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam::channel::{after, bounded, tick};
 use crossbeam::select;
+
+fn remove_whitespace(s: &str) -> String {
+    s.split_whitespace().collect()
+}
+
+fn now() -> Duration {
+    return SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+}
 
 pub struct PeerMap {
     peers: Arc<RwLock<HashMap<SocketAddr, Duration>>>, // socketaddr :: duration
@@ -78,10 +85,10 @@ struct RequestPeers {}
 
 impl WireMessage for RequestPeers {
     fn process(stream: &mut TcpStream) {
-        let peers = "127.0.0.1:8001\n127.0.0.1:8002\n127.0.0.1:8003\n127.0.0.1:8004\n127.0.0.1:8006";
+        let peers = "127.0.0.1:8001\n127.0.0.1:8002\n127.0.0.1:8003\n127.0.0.1:8004\n127.0.0.1:8005";
         stream.write(peers.as_bytes()).expect("Failed to write to server");
 
-        return; // Ok(RequestPeers{});
+        return;
     }
 }
 
@@ -89,11 +96,16 @@ struct WireProtocol {
 }
 
 impl WireProtocol {
-    pub fn parse_request(stream: &mut TcpStream) { // -> std::result::Result<WireMessage, Error> {
+    pub fn parse_request(stream: &mut TcpStream) {
         let mut bytes: [u8; 128] = [0;128]; // todo - arbitrary sized read
-        let total_read = stream.read(&mut bytes);
-        if total_read == 0 || bytes.len() < 14 { // arbitrary number, replace later with correct minimum message length
-            return // Err("Unknown message type!".into_string());
+        let read_result = stream.read(&mut bytes);
+        let total_bytes_read = match read_result {
+            Ok(n) => { n }
+            Err(_) => { return; }
+        };
+
+        if total_bytes_read == 0 || bytes.len() < 14 { // number can change replace later with codified minimum message length
+            return
         }
 
         let buffer = std::str::from_utf8(&mut bytes).expect("could not parse message");
@@ -102,11 +114,10 @@ impl WireProtocol {
             "request_peers" => {
                 RequestPeers::process(stream)
             },
-            "bar" => {},
-            _ => return, // Err("Unknown message type!".into_string()),
+            _ => return,
         }
 
-        return // Ok(WireMessage{});
+        return
     }
 }
 
@@ -173,7 +184,7 @@ impl Node {
     }
 
     fn request_new_peers(&self, peer_addr: &SocketAddr) -> Option<HashSet<SocketAddr>> {
-        println!("requesting new peers..");
+        println!("requesting new peers from {}", peer_addr);
         let buf = &mut [0; 74];
         let mut new_peers = HashSet::new();
 
@@ -187,49 +198,43 @@ impl Node {
             Ok(mut conn) => {
                 let resp = conn.write("request_peers".as_bytes());
                 if resp.is_err() {
-                    println!("Failed to write to node");
+                    println!("Failed to send request to peer {}", peer_addr);
                     return None;
                 }
 
-                println!("wrote request_peers");
-                conn.set_read_timeout(Some(Duration::from_millis(5000)));
+                println!("wrote request_peers to peer {}", peer_addr);
+                // conn.set_read_timeout(Some(Duration::from_millis(5000)));
                 conn.read(buf);
-                println!("read response from buf is {:?}", buf);
+                println!("read response from peer {} is {:?}", peer_addr, buf);
             },
             Err(e) => {
-                println!("Failed to connect to server: {}", e);
+                println!("Failed to connect to peer {}: {}", peer_addr, e);
                 return None
             }
         }
 
-        let peer_addrs = match std::str::from_utf8(buf) {
+        let mut peer_addrs = match std::str::from_utf8(buf) {
             Ok(v) => v,
             Err(e) => {
-                panic!("Invalid UTF-8 sequence");
+                print!("Invalid UTF-8 sequence: {}", e);
+                return None;
             },
         };
-        // let peer_addrs: std::iter::Iterator<Item=&str> = peer_addrs_str.split("\n").collect();
-        println!("peer_addrs are {}", peer_addrs);
 
+        println!("peer_addrs from peer {} are ..{}..", peer_addr, peer_addrs);
         for peer_addr in peer_addrs.split("\n") {
-            println!("peer_addr is {} - len {}", peer_addr, peer_addr.replace(
-                " ",
-                "",
-            ).len());
-            let socket_addr = SocketAddr::V4(peer_addr.parse().unwrap());
+            let peer_addr = &remove_whitespace(&peer_addr);
+            println!("peer_addr is {} - len {}", peer_addr, peer_addr.len());
+            let socket_addr = match peer_addr.parse::<SocketAddr>(){
+                Ok(val) => val,
+                Err(_) => continue,
+            };
             new_peers.insert(socket_addr);
         }
         println!("new_peers is {:?}", new_peers);
 
-        // split list
-        // coerce into socketaddrs
-        // update self.peers with any new peers
         return Some(new_peers);
     }
-}
-
-fn now() -> Duration {
-    return SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
 }
 
 pub fn main(){
@@ -351,120 +356,3 @@ fn test_peermap(){ // ensure that peermap provides a thread safe interface
 
     // TODO: test get interface
 }
-
-/*
-use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
-use std::env;
-use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
-use std::thread;
-use std::thread::sleep;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-static HEARTBEAT: Duration = Duration::from_secs(5);
-
-struct Config {
-    seed_node_address: SocketAddr,
-    heartbeat: Duration,
-}
-
-fn now() -> Duration {
-    return SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-}
-
-enum WireCommand {
-    NewPeersSince
-}
-
-
-struct Node {
-    peers: HashMap<SocketAddr, Duration>,
-    address: SocketAddr,
-    config: Config,
-    // todo: tcpstream conn pool
-}
-
-impl Node {
-    pub fn run(&self) {
-        let listener = TcpListener::bind(self.address).expect("could not bind");
-        for stream in listener.incoming() {
-            match stream {
-                Err(e) => { eprint!("failed {}", e) }
-                Ok(mut stream) => {
-                    thread::spawn(move || {
-                        WireProtocol::parse_request(&mut stream);
-                    });
-                }
-            }
-        }
-    }
-
-    fn gossip(&mut self) {
-        // prelude
-        if self.peers.keys().len() == 0 && self.address != self.config.seed_node_address {
-            let timestamp = now();
-            self.peers.insert(self.config.seed_node_address, timestamp);
-        }
-
-        thread::spawn( || {
-            let mut count :i32 = 1;
-            loop {
-                println!("heartbeat {}..", count);
-                let timestamp = now();
-                for (peer, duration) in self.peers.clone() {
-                    for new_peer in self.request_new_peers(&peer) {
-                        if self.peers.contains_key(&new_peer){
-                            continue;
-                        }
-                        // insert with lock
-                        self.peers.insert(new_peer, timestamp);
-                    }
-                }
-                count += 1;
-                sleep(self.config.heartbeat);
-            }
-        });
-    }
-
-    fn request_new_peers(&self, peer_addr: &SocketAddr) -> HashSet<SocketAddr> {
-        // no-op
-        let mut stream = TcpStream::connect(peer_addr).expect("Could not connect to peer");
-        stream.write("long_message".as_bytes()).expect("Failed to write to server");
-        // write ping -> new peer
-        // receive pong <- list of all known peers
-        // split list
-        // coerce into socketaddrs
-        // update self.peers with any new peers
-        println!("wrote long_message");
-        return HashSet::new();
-    }
-}
-
-fn ping(peer: SocketAddr) -> Vec<SocketAddr> {
-    let mut new_peers: Vec<SocketAddr> = Vec::new();
-    new_peers.push(SocketAddr::V4("192.168.0.1:8080".parse().unwrap()));
-    return new_peers;
-}
-
-fn pong() -> Vec<SocketAddr>  {
-    let mut peers = HashMap::new();
-    let peer_age = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    peers.insert(SocketAddr::V4("192.168.0.1:8080".parse().unwrap()), peer_age);
-
-    let mut new_peers: Vec<SocketAddr> = Vec::new();
-
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    for (peer, age) in peers {
-        if age < now{
-            new_peers.push(peer)
-        }
-    }
-
-    println!("Peers are {}", new_peers[0]);
-    return new_peers;
-}
-
-fn main() {
-}
- */
