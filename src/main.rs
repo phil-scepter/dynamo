@@ -112,23 +112,17 @@ impl WireMessage for RequestPeers {
             buffer += &format!("{}\n", peer_addr);
         }
 
-        let bytes_written = stream.output.write(
-            buffer.as_bytes()
-        ).expect("Failed to write to server");
-
-        assert_ne!(bytes_written, 0);
-
+        stream.output.write(buffer.as_bytes()).expect("Failed to write to server");
         stream.output.flush().expect("could not flush peers to stream");
-        return;
     }
 }
 
 struct WireProtocol {}
 
 impl <'x>WireProtocol {
-    const RequestPeers: &'x str = "request_peers";
-    const GetValueForKey: &'x str = "get_value_for_key";
-    const SetValueForKey: &'x str = "set_value_for_key";
+    const request_peers: &'x str = "request_peers";
+    const get_value_for_key: &'x str = "get_value_for_key";
+    const set_value_for_key: &'x str = "set_value_for_key";
 
     pub fn parse_request(mut stream: TcpStream, peer_map: PeerMap) {
         let mut buf_stream = match BufTcpStream::new(stream) {
@@ -172,13 +166,13 @@ impl <'x>WireProtocol {
         command = remove_whitespace(&command);
 
         match command {
-            RequestPeers => {
+            Self::request_peers => {
                 let handler = RequestPeers::new(peer_map);
                 println!("created handler");
                 handler.process(buf_stream)
             }
-            GetValueForKey => {},
-            SetValueForKey => {},
+            get_value_for_key => {},
+            set_value_for_key => {},
             unknown  => {
                 println!("unexpected command received: {}", unknown);
                 return;
@@ -244,8 +238,7 @@ impl Node {
                     Some(known_peers) => {
                         for peer_addr in &known_peers {
                             if self.address != *peer_addr && peer_map.get(&peer_addr) == None  {
-                                // insert with lock
-                                peer_map.set(*peer_addr, timestamp); //todo: timestamp should come from response?
+                                peer_map.set(*peer_addr, timestamp);
                             }
                         }
                     }
@@ -317,8 +310,12 @@ pub fn main(){
     let args: Vec<String> = env::args().collect();
     let hostname = &args[1];
     let port = &args[2];
-    let seed_node_address = SocketAddr::V4("127.0.0.1:8080".parse().unwrap());
-    let this_node_address = SocketAddr::V4(format!("{}:{}", hostname, port).parse().unwrap());
+    let seed_node_address = SocketAddr::V4(
+        "127.0.0.1:8080".parse().expect("Could not parse seed node address!")
+    );
+    let this_node_address = SocketAddr::V4(
+        format!("{}:{}", hostname, port).parse().unwrap()
+    );
 
     let config = Config {
         seed_node_address,
