@@ -21,6 +21,5 @@ def main(nodes_count):
 
 if __name__ == "__main__":
     nodes_count = sys.argv[1]
-    print("node_count is {}".format(nodes_count))
 
     main(int(nodes_count))

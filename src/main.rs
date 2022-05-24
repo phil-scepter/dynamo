@@ -247,14 +247,14 @@ impl Node {
             println!("heartbeat {}..", count);
             let timestamp = now();
             for (peer, duration) in peer_map.pairs().clone() {
-                let new_peers = self.request_new_peers(&peer);
-                match new_peers {
+                let known_peers = self.request_known_peers(&peer);
+                match known_peers {
                     None => {},
-                    Some(new_peers) => {
-                        for new_peer in &new_peers {
-                            if self.address != *new_peer && peer_map.get(&new_peer) == None  {
+                    Some(known_peers) => {
+                        for peer_addr in &known_peers {
+                            if self.address != *peer_addr && peer_map.get(&peer_addr) == None  {
                                 // insert with lock
-                                peer_map.set(*new_peer, timestamp); //todo: timestamp should come from response?
+                                peer_map.set(*peer_addr, timestamp); //todo: timestamp should come from response?
                             }
                         }
                     }
@@ -265,13 +265,13 @@ impl Node {
         }
     }
 
-    fn request_new_peers(&self, peer_addr: &SocketAddr) -> Option<HashSet<SocketAddr>> {
+    fn request_known_peers(&self, peer_addr: &SocketAddr) -> Option<HashSet<SocketAddr>> {
         if self.address == *peer_addr {
             return None;
         }
 
         let buffer = &mut [0; 256];
-        let mut new_peers = HashSet::new();
+        let mut known_peers = HashSet::new();
 
         let conn_result = TcpStream::connect(peer_addr);
         match conn_result {
@@ -308,11 +308,11 @@ impl Node {
                 Ok(val) => val,
                 Err(_) => continue,
             };
-            new_peers.insert(socket_addr);
+            known_peers.insert(socket_addr);
         }
 
-        println!("new_peers are {:?}", new_peers);
-        return Some(new_peers);
+        println!("known_peers are {:?}", known_peers);
+        return Some(known_peers);
     }
 }
 
@@ -322,21 +322,6 @@ pub fn main(){
     let hashmap: HashMap<SocketAddr, Duration> = HashMap::new();
     let rwlock: RwLock<HashMap<SocketAddr, Duration>> = RwLock::new(hashmap);
     let peers: Arc<RwLock<HashMap<SocketAddr, Duration>>> = Arc::new(rwlock);
-
-    // thread safe clones of entities to be moved for ticker loop
-    let peers_clone = Arc::clone(&peers);
-    let ticker_clone = ticker.clone();
-
-    thread::spawn(move || {
-        let peer_map: &PeerMap = &PeerMap { peers: peers_clone };
-        loop {
-            select! {
-                recv(ticker_clone) -> _ => {
-                    println!("peer_map is {:?}", &peer_map.pairs());
-                }
-            }
-        }
-    });
 
     let args: Vec<String> = env::args().collect();
     let hostname = &args[1];
